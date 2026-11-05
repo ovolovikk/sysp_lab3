@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AST Viewer</title>
+<style>
+:root {
+    --bg: #f5f5f2;
+    --panel: #ffffff;
+    --ink: #1c1c1e;
+    --muted: #707076;
+    --line: #dcdce0;
+    --link: #c3c3ca;
+    --root: #7b3fd4;
+    --stmt: #2463d6;
+    --expr: #d4691a;
+    --leaf: #23935a;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    display: grid;
+    grid-template-columns: 320px 1fr 340px;
+    grid-template-rows: 52px 1fr;
+}
+header {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 18px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+}
+header h1 { font-size: 16px; margin: 0; font-weight: 650; }
+header .file { font: 13px ui-monospace, Menlo, monospace; color: var(--muted); }
+header .spacer { flex: 1; }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); }
+.legend span::before {
+    content: ""; display: inline-block; width: 10px; height: 10px;
+    border-radius: 3px; margin-right: 6px; vertical-align: -1px; background: var(--c);
+}
+button {
+    font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 7px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer;
+}
+button:hover { background: #efeff3; }
+aside { background: var(--panel); overflow: auto; display: flex; flex-direction: column; }
+aside.left { border-right: 1px solid var(--line); }
+aside.right { border-left: 1px solid var(--line); }
+section { border-bottom: 1px solid var(--line); }
+section:last-child { border-bottom: 0; flex: 1; }
+h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .07em;
+    color: var(--muted); margin: 0; padding: 14px 16px 4px; font-weight: 600;
+}
+pre { margin: 0; padding: 8px 16px 16px; font: 12.5px/1.55 ui-monospace, Menlo, monospace; white-space: pre; }
+pre.output { color: var(--leaf); }
+main { position: relative; overflow: hidden; }
+svg { width: 100%; height: 100%; display: block; cursor: grab; }
+svg:active { cursor: grabbing; }
+.link { fill: none; stroke: var(--link); stroke-width: 1.5; }
+.node rect { fill: var(--panel); stroke-width: 2; }
+.node.collapsed rect { fill: #f0f0f4; stroke-dasharray: 4 3; }
+.node { cursor: pointer; }
+.node .type { font: 600 12px -apple-system, system-ui, sans-serif; }
+.node .value { font: 12px ui-monospace, Menlo, monospace; fill: var(--ink); }
+.node .count { font: 11px -apple-system, system-ui, sans-serif; fill: var(--muted); }
+.hint { position: absolute; left: 14px; bottom: 12px; font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+    <h1>Абстрактне синтаксичне дерево</h1>
+    <span class="file" id="file"></span>
+    <span class="spacer"></span>
+    <div class="legend">
+        <span style="--c: var(--root)">програма</span>
+        <span style="--c: var(--stmt)">оператор</span>
+        <span style="--c: var(--expr)">операція</span>
+        <span style="--c: var(--leaf)">змінна / число</span>
+    </div>
+    <button id="expand">Розгорнути все</button>
+    <button id="fit">Вмістити</button>
+</header>
+<aside class="left">
+    <section><h2>Вхідний код C</h2><pre id="source"></pre></section>
+    <section><h2>Результат виконання</h2><pre id="output" class="output"></pre></section>
+</aside>
+<main>
+    <svg id="tree"></svg>
+    <div class="hint">Клік по вузлу — згорнути / розгорнути · колесо — масштаб · перетягування — рух</div>
+</main>
+<aside class="right">
+    <section><h2>Згенерований Python</h2><pre id="python"></pre></section>
+</aside>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script src="ast.js"></script>
+<script>
+document.getElementById("file").textContent = DATA.file;
+document.getElementById("source").textContent = DATA.source;
+document.getElementById("python").textContent = DATA.python;
+document.getElementById("output").textContent = DATA.output;
+
+const kind = t => t === "program" ? "root" : t === "binop" || t === "unop" ? "expr" : t === "num" || t === "var" ? "leaf" : "stmt";
+const color = t => getComputedStyle(document.documentElement).getPropertyValue("--" + kind(t));
+const size = n => 1 + n.children.reduce((s, c) => s + size(c), 0);
+const short = s => s.length > 16 ? s.slice(0, 15) + "…" : s;
+
+const W = 118, H = 40;
+const layout = d3.tree().nodeSize([H + 12, W + 46]);
+const svg = d3.select("#tree");
+const g = svg.append("g");
+const linkLayer = g.append("g");
+const nodeLayer = g.append("g");
+const zoom = d3.zoom().scaleExtent([0.15, 3]).on("zoom", e => g.attr("transform", e.transform));
+svg.call(zoom);
+
+const root = d3.hierarchy(DATA.ast, d => d.children);
+root.descendants().forEach((d, i) => { d.id = i; d._children = d.children; });
+
+const linkPath = d3.linkHorizontal().x(d => d.y).y(d => d.x);
+
+function update() {
+    layout(root);
+    const t = svg.transition().duration(350);
+
+    linkLayer.selectAll("path")
+        .data(root.links(), d => d.target.id)
+        .join(enter => enter.append("path").attr("class", "link").attr("d", linkPath).attr("opacity", 0))
+        .transition(t).attr("d", linkPath).attr("opacity", 1);
+
+    const nodes = nodeLayer.selectAll("g.node")
+        .data(root.descendants(), d => d.id)
+        .join(enter => {
+            const n = enter.append("g").attr("class", "node")
+                .attr("transform", d => `translate(${d.y},${d.x})`).attr("opacity", 0)
+                .on("click", (e, d) => {
+                    if (!d._children) return;
+                    d.children = d.children ? null : d._children;
+                    update();
+                });
+            n.append("title").text(d => d.data.type + (d.data.value ? " " + d.data.value : ""));
+            n.append("rect").attr("x", -W / 2).attr("y", -H / 2).attr("width", W).attr("height", H).attr("rx", 8)
+                .attr("stroke", d => color(d.data.type));
+            n.append("text").attr("class", "type").attr("text-anchor", "middle")
+                .attr("y", d => d.data.value ? -4 : 4).attr("fill", d => color(d.data.type))
+                .text(d => d.data.type);
+            n.append("text").attr("class", "value").attr("text-anchor", "middle").attr("y", 12)
+                .text(d => short(d.data.value));
+            n.append("text").attr("class", "count").attr("x", W / 2 + 6).attr("y", 4);
+            return n;
+        });
+
+    nodes.classed("collapsed", d => !d.children && d._children);
+    nodes.select(".count").text(d => !d.children && d._children ? `+${size(d.data) - 1}` : "");
+    nodes.transition(t).attr("transform", d => `translate(${d.y},${d.x})`).attr("opacity", 1);
+}
+
+function fit() {
+    const nodes = root.descendants();
+    const x0 = d3.min(nodes, d => d.y) - W, x1 = d3.max(nodes, d => d.y) + W;
+    const y0 = d3.min(nodes, d => d.x) - H, y1 = d3.max(nodes, d => d.x) + H;
+    const { width, height } = svg.node().getBoundingClientRect();
+    const s = Math.min(1.3, width / (x1 - x0), height / (y1 - y0));
+    const tr = d3.zoomIdentity.translate(width / 2 - s * (x0 + x1) / 2, height / 2 - s * (y0 + y1) / 2).scale(s);
+    svg.transition().duration(450).call(zoom.transform, tr);
+}
+
+document.getElementById("fit").onclick = fit;
+document.getElementById("expand").onclick = () => {
+    root.descendants().forEach(d => { if (d._children) d.children = d._children; });
+    update();
+    setTimeout(fit, 360);
+};
+
+update();
+fit();
+</script>
+</body>
+</html>
